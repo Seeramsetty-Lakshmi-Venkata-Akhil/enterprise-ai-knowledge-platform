@@ -1,13 +1,17 @@
 from fastapi import FastAPI
 
+from enterprise_ai.core.config import get_settings
+
 
 def create_app() -> FastAPI:
+    settings = get_settings()
+
     app = FastAPI(
-        title="Enterprise AI Knowledge Platform",
-        version="0.1.0",
+        title=settings.app_name,
+        debug=settings.debug,
     )
 
-    @app.get("/health", tags=["System"])
+    @app.get("/health")
     async def health_check() -> dict[str, str]:
         return {"status": "healthy"}
 
