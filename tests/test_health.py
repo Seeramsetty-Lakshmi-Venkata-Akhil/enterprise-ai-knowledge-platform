@@ -10,3 +10,12 @@ def test_health_check_returns_healthy_status() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "healthy"}
+
+
+def test_readiness_check_returns_ready_status() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}

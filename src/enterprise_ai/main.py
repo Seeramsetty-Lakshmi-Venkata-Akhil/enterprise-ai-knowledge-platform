@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
+from enterprise_ai.api.system import router as system_router
 from enterprise_ai.core.config import get_settings
 from enterprise_ai.core.logging import configure_logging
 
@@ -22,9 +23,7 @@ def create_app() -> FastAPI:
         debug=settings.debug,
     )
 
-    @app.get("/health")
-    async def health_check() -> dict[str, str]:
-        return {"status": "healthy"}
+    app.include_router(system_router)
 
     return app
 
