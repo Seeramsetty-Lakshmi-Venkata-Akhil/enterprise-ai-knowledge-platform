@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "Enterprise AI Knowledge Platform"
     app_env: str = "development"
     debug: bool = False
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_ai"
 
     model_config = SettingsConfigDict(
         env_file=".env",
