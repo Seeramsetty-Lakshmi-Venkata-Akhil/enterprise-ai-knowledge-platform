@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
+from enterprise_ai.api.organizations import router as organizations_router
 from enterprise_ai.api.system import router as system_router
 from enterprise_ai.core.config import get_settings
 from enterprise_ai.core.logging import configure_logging
@@ -24,7 +25,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(system_router)
-
+    app.include_router(organizations_router)
     return app
 
 
