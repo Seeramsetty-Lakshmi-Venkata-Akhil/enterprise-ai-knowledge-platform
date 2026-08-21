@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,7 @@ from enterprise_ai.persistence.models.organization import Organization
 from enterprise_ai.schemas.organization import (
     OrganizationCreate,
     OrganizationResponse,
+    OrganizationUpdate,
 )
 
 router = APIRouter(
@@ -65,3 +67,70 @@ async def get_organization(
         )
 
     return organization
+
+
+@router.get(
+    "",
+    response_model=list[OrganizationResponse],
+)
+async def list_organizations(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[Organization]:
+    result = await session.execute(select(Organization).order_by(Organization.created_at.desc()))
+
+    return list(result.scalars().all())
+
+
+@router.patch(
+    "/{organization_id}",
+    response_model=OrganizationResponse,
+)
+async def update_organization(
+    organization_id: UUID,
+    payload: OrganizationUpdate,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Organization:
+    organization = await session.get(Organization, organization_id)
+
+    if organization is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+
+    if payload.name is not None:
+        organization.name = payload.name
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organization already exists",
+        ) from exc
+
+    await session.refresh(organization)
+
+    return organization
+
+
+@router.delete(
+    "/{organization_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_organization(
+    organization_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> None:
+    organization = await session.get(Organization, organization_id)
+
+    if organization is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+
+    await session.delete(organization)
+    await session.commit()
