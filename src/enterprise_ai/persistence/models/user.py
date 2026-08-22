@@ -2,32 +2,43 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Uuid
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from enterprise_ai.persistence.base import Base
 
 if TYPE_CHECKING:
-    from enterprise_ai.persistence.models.user import User
+    from enterprise_ai.persistence.models.organization import Organization
 
 
-class Organization(Base):
-    __tablename__ = "organizations"
+class User(Base):
+    __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
         primary_key=True,
         default=uuid.uuid4,
     )
 
     name: Mapped[str] = mapped_column(
+        String(100),
         nullable=False,
+    )
+
+    email: Mapped[str] = mapped_column(
+        String(255),
         unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id"),
+        nullable=False,
         index=True,
     )
 
-    users: Mapped[list["User"]] = relationship(
-        back_populates="organization",
+    organization: Mapped["Organization"] = relationship(
+        back_populates="users",
     )
 
     created_at: Mapped[datetime] = mapped_column(
