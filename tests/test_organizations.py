@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from enterprise_ai.main import create_app
 from enterprise_ai.persistence.database import get_db_session
 from enterprise_ai.persistence.models.organization import Organization
+from enterprise_ai.persistence.models.user import User
 
 ORGANIZATION_ID = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -298,3 +299,68 @@ def test_delete_organization_returns_404_when_not_found() -> None:
 
     session.delete.assert_not_awaited()
     session.commit.assert_not_awaited()
+
+
+def test_list_organization_users_returns_only_scoped_users() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    organization = Organization(
+        id=ORGANIZATION_ID,
+        name="Test Organization",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    user = User(
+        id=UUID("22222222-2222-2222-2222-222222222222"),
+        name="Scoped User",
+        email="scoped@example.com",
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = organization
+
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [user]
+    session.execute.return_value = result
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.get(f"/organizations/{ORGANIZATION_ID}/users?limit=20&offset=0")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["organization_id"] == str(ORGANIZATION_ID)
+    assert response.json()[0]["name"] == "Scoped User"
+
+    session.execute.assert_awaited_once()
+
+
+def test_list_organization_users_returns_404_when_organization_not_found() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.get.return_value = None
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.get(f"/organizations/{ORGANIZATION_ID}/users")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Organization not found",
+    }
+
+    session.execute.assert_not_awaited()

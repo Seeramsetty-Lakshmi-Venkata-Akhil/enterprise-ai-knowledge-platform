@@ -126,7 +126,7 @@ def test_create_user_returns_409_when_email_exists() -> None:
 
     assert response.status_code == 409
     assert response.json() == {
-        "detail": "User already exists",
+        "detail": "Email already exists",
     }
 
     session.rollback.assert_awaited_once()
@@ -181,3 +181,171 @@ def test_get_user_returns_404_when_not_found() -> None:
     assert response.json() == {
         "detail": "User not found",
     }
+
+
+def test_list_users_rejects_limit_above_maximum() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/users?limit=101&offset=0")
+
+    assert response.status_code == 422
+
+
+def test_update_user_returns_updated_user() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    user = User(
+        id=USER_ID,
+        name="Old Name",
+        email="old@example.com",
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = user
+
+    async def refresh(updated_user: User) -> None:
+        updated_user.updated_at = datetime.now(UTC)
+
+    session.refresh.side_effect = refresh
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/users/{USER_ID}",
+        json={"name": "Updated Name"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Updated Name"
+    assert response.json()["email"] == "old@example.com"
+
+    session.commit.assert_awaited_once()
+    session.refresh.assert_awaited_once()
+
+
+def test_update_user_returns_404_when_not_found() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.get.return_value = None
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/users/{USER_ID}",
+        json={"name": "Updated Name"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "User not found",
+    }
+
+    session.commit.assert_not_awaited()
+
+
+def test_update_user_returns_409_when_email_exists() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    user = User(
+        id=USER_ID,
+        name="Test User",
+        email="original@example.com",
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = user
+    session.commit.side_effect = IntegrityError(
+        statement="UPDATE users",
+        params={},
+        orig=Exception("duplicate email"),
+    )
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/users/{USER_ID}",
+        json={"email": "Existing@Example.com"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Email already exists",
+    }
+
+    session.rollback.assert_awaited_once()
+
+
+def test_delete_user_returns_204() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    user = User(
+        id=USER_ID,
+        name="Test User",
+        email="test.user@example.com",
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = user
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.delete(f"/users/{USER_ID}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+    session.delete.assert_awaited_once_with(user)
+    session.commit.assert_awaited_once()
+
+
+def test_delete_user_returns_404_when_not_found() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.get.return_value = None
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = override_db_session
+
+    client = TestClient(app)
+
+    response = client.delete(f"/users/{USER_ID}")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "User not found",
+    }
+
+    session.delete.assert_not_awaited()
+    session.commit.assert_not_awaited()
