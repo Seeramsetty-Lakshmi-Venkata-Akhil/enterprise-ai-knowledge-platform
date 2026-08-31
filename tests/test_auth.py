@@ -209,7 +209,13 @@ def test_get_me_rejects_tampered_token() -> None:
         organization_id=ORGANIZATION_ID,
     )
 
-    tampered_token = token[:-1] + ("A" if token[-1] != "A" else "B")
+    header, payload, signature = token.split(".")
+
+    # Tamper with the beginning of the signature instead of the
+    # final Base64URL character.
+    tampered_signature = ("A" if signature[0] != "A" else "B") + signature[1:]
+
+    tampered_token = f"{header}.{payload}.{tampered_signature}"
 
     response = client.get(
         "/auth/me",
@@ -223,6 +229,7 @@ def test_get_me_rejects_tampered_token() -> None:
         "detail": "Invalid or expired token",
     }
 
+    # JWT validation should fail before the database is queried.
     session.get.assert_not_awaited()
 
 

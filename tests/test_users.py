@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -15,7 +15,12 @@ from enterprise_ai.persistence.models.organization import Organization
 from enterprise_ai.persistence.models.user import User
 
 ORGANIZATION_ID = UUID("11111111-1111-1111-1111-111111111111")
+
 USER_ID = UUID("22222222-2222-2222-2222-222222222222")
+
+ORGANIZATION_B_ID = UUID("33333333-3333-3333-3333-333333333333")
+
+USER_B_ID = UUID("44444444-4444-4444-4444-444444444444")
 
 
 def test_create_user_returns_created_user() -> None:
@@ -61,7 +66,8 @@ def test_create_user_returns_created_user() -> None:
     assert response.json()["email"] == "test.user@example.com"
     assert response.json()["organization_id"] == str(ORGANIZATION_ID)
 
-    # Security: plaintext password and password hash must never be exposed.
+    # Security: plaintext password and password hash
+    # must never be exposed.
     assert "password" not in response.json()
     assert "password_hash" not in response.json()
 
@@ -150,22 +156,38 @@ def test_create_user_returns_409_when_email_exists() -> None:
 def test_get_user_returns_user() -> None:
     session = AsyncMock(spec=AsyncSession)
 
-    user = User(
+    current_user = User(
         id=USER_ID,
-        name="Test User",
-        email="test.user@example.com",
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
         organization_id=ORGANIZATION_ID,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
 
-    session.get.return_value = user
+    requested_user = User(
+        id=USER_ID,
+        name="Test User",
+        email="test.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = requested_user
 
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
@@ -182,15 +204,76 @@ def test_get_user_returns_404_when_not_found() -> None:
     session = AsyncMock(spec=AsyncSession)
     session.get.return_value = None
 
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
     response = client.get(f"/users/{USER_ID}")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "User not found",
+    }
+
+
+def test_get_user_returns_404_for_different_organization() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Akhil",
+        email="akhil@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    other_tenant_user = User(
+        id=USER_B_ID,
+        name="Bob",
+        email="bob@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_B_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = other_tenant_user
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    async def override_current_user() -> User:
+        return current_user
+
+    app = create_app()
+
+    app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
+
+    client = TestClient(app)
+
+    response = client.get(f"/users/{USER_B_ID}")
 
     assert response.status_code == 404
     assert response.json() == {
@@ -213,6 +296,7 @@ def test_list_users_rejects_limit_above_maximum() -> None:
         return current_user
 
     app = create_app()
+
     app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
@@ -222,13 +306,91 @@ def test_list_users_rejects_limit_above_maximum() -> None:
     assert response.status_code == 422
 
 
+def test_list_users_scopes_query_to_current_user_organization() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Akhil",
+        email="akhil@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    organization_user = User(
+        id=USER_B_ID,
+        name="Alice",
+        email="alice@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    result = MagicMock()
+    scalars = MagicMock()
+
+    scalars.all.return_value = [
+        organization_user,
+    ]
+
+    result.scalars.return_value = scalars
+    session.execute.return_value = result
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    async def override_current_user() -> User:
+        return current_user
+
+    app = create_app()
+
+    app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
+
+    client = TestClient(app)
+
+    response = client.get("/users")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["id"] == str(USER_B_ID)
+    assert response.json()[0]["organization_id"] == str(ORGANIZATION_ID)
+
+    session.execute.assert_awaited_once()
+
+    statement = session.execute.await_args.args[0]
+
+    compiled_statement = str(
+        statement.compile(
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "users.organization_id" in compiled_statement
+    assert ORGANIZATION_ID.hex in compiled_statement
+
+
 def test_update_user_returns_updated_user() -> None:
     session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
     user = User(
         id=USER_ID,
         name="Old Name",
         email="old@example.com",
+        password_hash=hash_password("StrongPass123!"),
         organization_id=ORGANIZATION_ID,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -244,8 +406,13 @@ def test_update_user_returns_updated_user() -> None:
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
@@ -266,11 +433,26 @@ def test_update_user_returns_404_when_not_found() -> None:
     session = AsyncMock(spec=AsyncSession)
     session.get.return_value = None
 
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
@@ -290,16 +472,28 @@ def test_update_user_returns_404_when_not_found() -> None:
 def test_update_user_returns_409_when_email_exists() -> None:
     session = AsyncMock(spec=AsyncSession)
 
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     user = User(
         id=USER_ID,
         name="Test User",
         email="original@example.com",
+        password_hash=hash_password("StrongPass123!"),
         organization_id=ORGANIZATION_ID,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
 
     session.get.return_value = user
+
     session.commit.side_effect = IntegrityError(
         statement="UPDATE users",
         params={},
@@ -309,8 +503,13 @@ def test_update_user_returns_409_when_email_exists() -> None:
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
@@ -327,13 +526,76 @@ def test_update_user_returns_409_when_email_exists() -> None:
     session.rollback.assert_awaited_once()
 
 
+def test_update_user_returns_404_for_different_organization() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Akhil",
+        email="akhil@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    other_tenant_user = User(
+        id=USER_B_ID,
+        name="Bob",
+        email="bob@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_B_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = other_tenant_user
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    async def override_current_user() -> User:
+        return current_user
+
+    app = create_app()
+
+    app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
+
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/users/{USER_B_ID}",
+        json={"name": "Hacked Name"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "User not found",
+    }
+
+    session.commit.assert_not_awaited()
+    session.refresh.assert_not_awaited()
+
+
 def test_delete_user_returns_204() -> None:
     session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
     user = User(
         id=USER_ID,
         name="Test User",
         email="test.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
         organization_id=ORGANIZATION_ID,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -344,8 +606,13 @@ def test_delete_user_returns_204() -> None:
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
@@ -362,15 +629,79 @@ def test_delete_user_returns_404_when_not_found() -> None:
     session = AsyncMock(spec=AsyncSession)
     session.get.return_value = None
 
+    current_user = User(
+        id=USER_ID,
+        name="Current User",
+        email="current.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     async def override_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+
     app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
 
     client = TestClient(app)
 
     response = client.delete(f"/users/{USER_ID}")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "User not found",
+    }
+
+    session.delete.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+def test_delete_user_returns_404_for_different_organization() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    current_user = User(
+        id=USER_ID,
+        name="Akhil",
+        email="akhil@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    other_tenant_user = User(
+        id=USER_B_ID,
+        name="Bob",
+        email="bob@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_B_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    session.get.return_value = other_tenant_user
+
+    async def override_db_session() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    async def override_current_user() -> User:
+        return current_user
+
+    app = create_app()
+
+    app.dependency_overrides[get_db_session] = override_db_session
+    app.dependency_overrides[get_current_user] = override_current_user
+
+    client = TestClient(app)
+
+    response = client.delete(f"/users/{USER_B_ID}")
 
     assert response.status_code == 404
     assert response.json() == {

@@ -95,10 +95,11 @@ async def list_users(
 async def get_user(
     user_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
     user = await session.get(User, user_id)
 
-    if user is None:
+    if user is None or user.organization_id != current_user.organization_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
@@ -114,11 +115,18 @@ async def get_user(
 async def update_user(
     user_id: UUID,
     payload: UserUpdate,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
+    session: Annotated[
+        AsyncSession,
+        Depends(get_db_session),
+    ],
+    current_user: Annotated[
+        User,
+        Depends(get_current_user),
+    ],
 ) -> User:
     user = await session.get(User, user_id)
 
-    if user is None:
+    if user is None or user.organization_id != current_user.organization_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
@@ -132,15 +140,13 @@ async def update_user(
 
     try:
         await session.commit()
+        await session.refresh(user)
     except IntegrityError as exc:
         await session.rollback()
-
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already exists",
         ) from exc
-
-    await session.refresh(user)
 
     return user
 
@@ -152,10 +158,11 @@ async def update_user(
 async def delete_user(
     user_id: UUID,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> None:
     user = await session.get(User, user_id)
 
-    if user is None:
+    if user is None or user.organization_id != current_user.organization_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
