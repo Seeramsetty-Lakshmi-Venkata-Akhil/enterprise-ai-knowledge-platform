@@ -6,6 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from enterprise_ai.api.dependencies import get_current_user
+from enterprise_ai.core.security import hash_password
 from enterprise_ai.persistence.database import get_db_session
 from enterprise_ai.persistence.models.organization import Organization
 from enterprise_ai.persistence.models.user import User
@@ -42,6 +44,7 @@ async def create_user(
     user = User(
         name=payload.name,
         email=normalized_email,
+        password_hash=hash_password(payload.password),
         organization_id=payload.organization_id,
     )
 
@@ -68,11 +71,18 @@ async def create_user(
 )
 async def list_users(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[User, Depends(get_current_user)],
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> list[User]:
     result = await session.execute(
-        select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+        select(User)
+        .where(
+            User.organization_id == current_user.organization_id,
+        )
+        .order_by(User.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
 
     return list(result.scalars().all())

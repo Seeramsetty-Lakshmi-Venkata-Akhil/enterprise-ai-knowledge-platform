@@ -31,6 +31,11 @@ class User(Base):
         nullable=False,
     )
 
+    password_hash: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id"),
         nullable=False,

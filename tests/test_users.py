@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from enterprise_ai.api.dependencies import get_current_user
+from enterprise_ai.core.security import hash_password
 from enterprise_ai.main import create_app
 from enterprise_ai.persistence.database import get_db_session
 from enterprise_ai.persistence.models.organization import Organization
@@ -48,6 +50,7 @@ def test_create_user_returns_created_user() -> None:
         json={
             "name": "Test User",
             "email": "test.user@example.com",
+            "password": "StrongPass123!",
             "organization_id": str(ORGANIZATION_ID),
         },
     )
@@ -57,6 +60,16 @@ def test_create_user_returns_created_user() -> None:
     assert response.json()["name"] == "Test User"
     assert response.json()["email"] == "test.user@example.com"
     assert response.json()["organization_id"] == str(ORGANIZATION_ID)
+
+    # Security: plaintext password and password hash must never be exposed.
+    assert "password" not in response.json()
+    assert "password_hash" not in response.json()
+
+    # Verify that the password was hashed before persistence.
+    added_user = session.add.call_args.args[0]
+
+    assert added_user.password_hash != "StrongPass123!"
+    assert added_user.password_hash.startswith("$argon2")
 
     session.commit.assert_awaited_once()
 
@@ -78,6 +91,7 @@ def test_create_user_returns_404_when_organization_not_found() -> None:
         json={
             "name": "Test User",
             "email": "test.user@example.com",
+            "password": "StrongPass123!",
             "organization_id": str(ORGANIZATION_ID),
         },
     )
@@ -120,6 +134,7 @@ def test_create_user_returns_409_when_email_exists() -> None:
         json={
             "name": "Test User",
             "email": "test.user@example.com",
+            "password": "StrongPass123!",
             "organization_id": str(ORGANIZATION_ID),
         },
     )
@@ -184,7 +199,22 @@ def test_get_user_returns_404_when_not_found() -> None:
 
 
 def test_list_users_rejects_limit_above_maximum() -> None:
+    current_user = User(
+        id=USER_ID,
+        name="Test User",
+        email="test.user@example.com",
+        password_hash=hash_password("StrongPass123!"),
+        organization_id=ORGANIZATION_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    async def override_current_user() -> User:
+        return current_user
+
     app = create_app()
+    app.dependency_overrides[get_current_user] = override_current_user
+
     client = TestClient(app)
 
     response = client.get("/users?limit=101&offset=0")
