@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 
 from enterprise_ai.api.auth import router as auth_router
+from enterprise_ai.api.documents import router as documents_router
 from enterprise_ai.api.knowledge_bases import router as knowledge_bases_router
 from enterprise_ai.api.organizations import router as organizations_router
 from enterprise_ai.api.system import router as system_router
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router)
     app.include_router(auth_router)
     app.include_router(knowledge_bases_router)
+    app.include_router(documents_router)
     return app
 
 
