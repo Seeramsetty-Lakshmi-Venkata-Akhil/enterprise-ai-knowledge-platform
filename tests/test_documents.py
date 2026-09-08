@@ -10,6 +10,8 @@ from enterprise_ai.persistence.database import get_db_session
 from enterprise_ai.persistence.models.document import Document, DocumentStatus
 from enterprise_ai.persistence.models.knowledge_base import KnowledgeBase
 from enterprise_ai.persistence.models.user import User
+from enterprise_ai.storage.base import StorageService
+from enterprise_ai.storage.dependencies import get_storage_service
 
 ORGANIZATION_ID = UUID("11111111-1111-1111-1111-111111111111")
 OTHER_ORGANIZATION_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -76,6 +78,7 @@ def build_document(
 def override_dependencies(
     session: AsyncMock,
     current_user: User,
+    storage: StorageService | None = None,
 ) -> None:
     async def override_get_db_session():
         yield session
@@ -85,6 +88,13 @@ def override_dependencies(
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_current_user] = override_get_current_user
+
+    if storage is not None:
+
+        def override_get_storage_service() -> StorageService:
+            return storage
+
+        app.dependency_overrides[get_storage_service] = override_get_storage_service
 
 
 def clear_overrides() -> None:
@@ -402,6 +412,220 @@ def test_delete_document_returns_404_for_cross_tenant_document() -> None:
         }
 
         session.delete.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    finally:
+        clear_overrides()
+
+
+def test_upload_document_file_success() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+    document = build_document()
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = document
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+    storage.save = AsyncMock(
+        return_value=(
+            f"organizations/{ORGANIZATION_ID}/"
+            f"knowledge-bases/{KNOWLEDGE_BASE_ID}/"
+            f"documents/{DOCUMENT_ID}/architecture.pdf"
+        )
+    )
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                (f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{DOCUMENT_ID}/upload"),
+                files={
+                    "file": (
+                        "architecture.pdf",
+                        b"fake-pdf-content",
+                        "application/pdf",
+                    )
+                },
+            )
+
+        assert response.status_code == 200
+
+        body = response.json()
+
+        assert body["id"] == str(DOCUMENT_ID)
+        assert body["status"] == "pending"
+        assert body["error_message"] is None
+
+        assert body["storage_path"] == (
+            f"organizations/{ORGANIZATION_ID}/"
+            f"knowledge-bases/{KNOWLEDGE_BASE_ID}/"
+            f"documents/{DOCUMENT_ID}/architecture.pdf"
+        )
+
+        storage.save.assert_awaited_once()
+
+        save_call = storage.save.await_args
+
+        assert save_call.kwargs["destination_path"] == (
+            f"organizations/{ORGANIZATION_ID}/"
+            f"knowledge-bases/{KNOWLEDGE_BASE_ID}/"
+            f"documents/{DOCUMENT_ID}/architecture.pdf"
+        )
+
+        session.commit.assert_awaited_once()
+        session.refresh.assert_awaited_once_with(document)
+
+    finally:
+        clear_overrides()
+
+
+def test_upload_document_file_returns_400_for_unsupported_type() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+    document = build_document()
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = document
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+    storage.save = AsyncMock()
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                (f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{DOCUMENT_ID}/upload"),
+                files={
+                    "file": (
+                        "malware.exe",
+                        b"not-safe",
+                        "application/x-msdownload",
+                    )
+                },
+            )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "detail": "Unsupported file type",
+        }
+
+        storage.save.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    finally:
+        clear_overrides()
+
+
+def test_upload_document_file_returns_413_when_file_too_large() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+    document = build_document()
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = document
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+    storage.save = AsyncMock()
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    oversized_content = b"x" * (10 * 1024 * 1024 + 1)
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                (f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{DOCUMENT_ID}/upload"),
+                files={
+                    "file": (
+                        "large.pdf",
+                        oversized_content,
+                        "application/pdf",
+                    )
+                },
+            )
+
+        assert response.status_code == 413
+        assert response.json() == {
+            "detail": "Uploaded file exceeds 10 MB limit",
+        }
+
+        storage.save.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    finally:
+        clear_overrides()
+
+
+def test_upload_document_file_returns_404_for_cross_tenant_document() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+    storage.save = AsyncMock()
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                (f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{OTHER_DOCUMENT_ID}/upload"),
+                files={
+                    "file": (
+                        "secret.pdf",
+                        b"secret-content",
+                        "application/pdf",
+                    )
+                },
+            )
+
+        assert response.status_code == 404
+        assert response.json() == {
+            "detail": "Document not found",
+        }
+
+        storage.save.assert_not_awaited()
         session.commit.assert_not_awaited()
 
     finally:

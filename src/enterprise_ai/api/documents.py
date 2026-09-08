@@ -1,13 +1,13 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from enterprise_ai.api.dependencies import get_current_user
 from enterprise_ai.persistence.database import get_db_session
-from enterprise_ai.persistence.models.document import Document
+from enterprise_ai.persistence.models.document import Document, DocumentStatus
 from enterprise_ai.persistence.models.knowledge_base import KnowledgeBase
 from enterprise_ai.persistence.models.user import User
 from enterprise_ai.schemas.document import (
@@ -15,6 +15,14 @@ from enterprise_ai.schemas.document import (
     DocumentResponse,
     DocumentUpdate,
 )
+from enterprise_ai.storage.base import StorageService
+from enterprise_ai.storage.dependencies import get_storage_service
+from enterprise_ai.storage.paths import build_document_storage_path
+from enterprise_ai.storage.uploads import (
+    UploadTooLargeError,
+    save_upload_to_temp_file,
+)
+from enterprise_ai.storage.validation import validate_upload_file
 
 DbSession = Annotated[
     AsyncSession,
@@ -26,6 +34,10 @@ CurrentUser = Annotated[
     Depends(get_current_user),
 ]
 
+Storage = Annotated[
+    StorageService,
+    Depends(get_storage_service),
+]
 
 router = APIRouter(
     prefix="/knowledge-bases/{knowledge_base_id}/documents",
@@ -106,6 +118,74 @@ async def create_document(
     await session.refresh(document)
 
     return document
+
+
+@router.post(
+    "/{document_id}/upload",
+    response_model=DocumentResponse,
+)
+async def upload_document_file(
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    file: Annotated[UploadFile, File()],
+    session: DbSession,
+    current_user: CurrentUser,
+    storage: Storage,
+) -> Document:
+    await get_authorized_knowledge_base(
+        knowledge_base_id,
+        session,
+        current_user,
+    )
+
+    document = await get_authorized_document(
+        document_id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        organization_id=current_user.organization_id,
+        session=session,
+    )
+
+    try:
+        validate_upload_file(file)
+
+        temp_path = await save_upload_to_temp_file(file)
+
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    destination_path = build_document_storage_path(
+        organization_id=current_user.organization_id,
+        knowledge_base_id=knowledge_base_id,
+        document_id=document.id,
+        filename=file.filename,
+    )
+
+    try:
+        stored_path = await storage.save(
+            source_path=temp_path,
+            destination_path=destination_path,
+        )
+
+        document.storage_path = stored_path
+        document.status = DocumentStatus.PENDING
+        document.error_message = None
+
+        await session.commit()
+        await session.refresh(document)
+
+        return document
+
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @router.get(

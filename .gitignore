@@ -8,3 +8,5 @@ __pycache__/
 .idea/
 .vscode/
 *.egg-info/
+# Runtime uploaded files
+data/uploads/

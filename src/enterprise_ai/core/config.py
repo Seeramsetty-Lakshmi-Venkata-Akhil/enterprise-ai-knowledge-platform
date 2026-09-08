@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_ai"
+    storage_root: str = "data/uploads"
 
     model_config = SettingsConfigDict(
         env_file=".env",
