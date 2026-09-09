@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from enterprise_ai.api.dependencies import get_current_user
+from enterprise_ai.ingestion.service import DocumentIngestionService
 from enterprise_ai.persistence.database import get_db_session
 from enterprise_ai.persistence.models.document import Document, DocumentStatus
 from enterprise_ai.persistence.models.knowledge_base import KnowledgeBase
@@ -186,6 +187,52 @@ async def upload_document_file(
 
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@router.post(
+    "/{document_id}/ingest",
+    response_model=DocumentResponse,
+)
+async def ingest_document(
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    session: DbSession,
+    current_user: CurrentUser,
+    storage: Storage,
+) -> Document:
+    await get_authorized_knowledge_base(
+        knowledge_base_id,
+        session,
+        current_user,
+    )
+
+    document = await get_authorized_document(
+        document_id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        organization_id=current_user.organization_id,
+        session=session,
+    )
+
+    ingestion_service = DocumentIngestionService()
+
+    try:
+        await ingestion_service.extract_document_text(
+            document=document,
+            storage=storage,
+            session=session,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored document file not found",
+        ) from exc
+
+    return document
 
 
 @router.get(

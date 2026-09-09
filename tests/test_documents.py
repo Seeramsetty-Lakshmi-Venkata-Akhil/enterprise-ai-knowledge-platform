@@ -12,6 +12,7 @@ from enterprise_ai.persistence.models.knowledge_base import KnowledgeBase
 from enterprise_ai.persistence.models.user import User
 from enterprise_ai.storage.base import StorageService
 from enterprise_ai.storage.dependencies import get_storage_service
+from enterprise_ai.storage.local import LocalFileStorage
 
 ORGANIZATION_ID = UUID("11111111-1111-1111-1111-111111111111")
 OTHER_ORGANIZATION_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -627,6 +628,141 @@ def test_upload_document_file_returns_404_for_cross_tenant_document() -> None:
 
         storage.save.assert_not_awaited()
         session.commit.assert_not_awaited()
+
+    finally:
+        clear_overrides()
+
+
+def test_ingest_document_success(tmp_path) -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+    document = build_document(
+        name="architecture.txt",
+    )
+    document.storage_path = "documents/architecture.txt"
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = document
+    session.execute.return_value = result
+
+    stored_file = tmp_path / "documents" / "architecture.txt"
+    stored_file.parent.mkdir(parents=True)
+    stored_file.write_text(
+        "Enterprise     AI\n\n\nFastAPI",
+        encoding="utf-8",
+    )
+
+    storage = LocalFileStorage(root_directory=tmp_path)
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{DOCUMENT_ID}/ingest"
+            )
+
+        assert response.status_code == 200
+
+        body = response.json()
+
+        assert body["id"] == str(DOCUMENT_ID)
+        assert body["status"] == "completed"
+        assert body["error_message"] is None
+
+        assert document.status == DocumentStatus.COMPLETED
+
+        assert session.commit.await_count == 2
+        assert session.refresh.await_count == 2
+
+    finally:
+        clear_overrides()
+
+
+def test_ingest_document_returns_400_without_uploaded_file() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+    document = build_document()
+
+    document.storage_path = None
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = document
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{DOCUMENT_ID}/ingest"
+            )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "detail": "Document has no uploaded file",
+        }
+
+        assert document.status == DocumentStatus.PENDING
+
+        session.commit.assert_not_awaited()
+        session.refresh.assert_not_awaited()
+
+    finally:
+        clear_overrides()
+
+
+def test_ingest_document_returns_404_for_cross_tenant_document() -> None:
+    session = AsyncMock()
+
+    current_user = build_current_user()
+    knowledge_base = build_knowledge_base()
+
+    session.get.return_value = knowledge_base
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute.return_value = result
+
+    storage = MagicMock(spec=StorageService)
+
+    override_dependencies(
+        session,
+        current_user,
+        storage,
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/knowledge-bases/{KNOWLEDGE_BASE_ID}/documents/{OTHER_DOCUMENT_ID}/ingest"
+            )
+
+        assert response.status_code == 404
+        assert response.json() == {
+            "detail": "Document not found",
+        }
+
+        session.commit.assert_not_awaited()
+        session.refresh.assert_not_awaited()
 
     finally:
         clear_overrides()
